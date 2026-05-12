@@ -1,0 +1,4 @@
+exclude:
+  # Logging this bucket requires a second S3 bucket to receive the logs,
+  # creating a circular bootstrap dependency. Acceptable for state bucket.
+  - aws-s3-enable-bucket-logging

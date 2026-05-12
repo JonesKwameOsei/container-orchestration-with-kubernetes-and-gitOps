@@ -1,0 +1,11 @@
+# Local state — bootstrap uses local state intentionally, but never commit it
+terraform.tfstate
+terraform.tfstate.backup
+
+# Terraform working directory
+.terraform/
+.terraform.lock.hcl
+
+# Variable overrides
+*.tfvars
+*.tfvars.json
