@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+apt-get update -y
+apt-get install -y curl unzip awscli
+
+# Set the hostname immediately for this boot session
+hostnamectl set-hostname "${hostname}"
+
+# Make it persist across reboots — cloud-init resets hostname on reboot
+# unless preserve_hostname is explicitly set to true
+echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg
+
+# Update /etc/hosts to prevent sudo resolution delays
+sed -i "s/^127.0.0.1 localhost$/127.0.0.1 localhost ${hostname}/" /etc/hosts
+
+echo "Hostname successfully set to: ${hostname}"
