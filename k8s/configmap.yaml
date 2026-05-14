@@ -1,3 +1,21 @@
 # --------------- Configmaps ------------------------------------------
 
-apiVersion
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datavault-config
+  namespace: datavault-dev
+  labels:
+    app: datavault-api
+data:
+  # Application environment - controls logging verbosity and behaviour 
+  APP_ENV: "production"
+
+  # Log level: set to "info" - appropriate for production
+  # Change to "debug" only during active troubleshooting
+  LOG_LEVEL: "info"
+  # Database host - this points to RDS or Aurora
+  DB_HOST: "datavault-db.internal" 
+  # Application port - must match the containerPort in the Deployment
+  PORT: "8080"
+
