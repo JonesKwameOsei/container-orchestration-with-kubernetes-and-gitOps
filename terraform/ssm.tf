@@ -25,14 +25,14 @@ resource "aws_secretsmanager_secret" "ssh_key" {
   kms_key_id  = aws_kms_key.app.arn
 
   # Best Practice: Force deletion without recovery window only if needed for testing
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "ssh_key_val" {
   secret_id     = aws_secretsmanager_secret.ssh_key.id
   secret_string = tls_private_key.main.private_key_pem
 
-   lifecycle {
+  lifecycle {
     ignore_changes = [secret_string] # Allow Lambda to manage values after deployment
   }
 }

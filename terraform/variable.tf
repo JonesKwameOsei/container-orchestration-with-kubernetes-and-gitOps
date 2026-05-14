@@ -79,8 +79,8 @@ variable "ec2_volume_type" {
 
 variable "hostname" {
   description = "Set custom hostname for EC2"
-  type = string
-  default = "datavault-k3s-node"
+  type        = string
+  default     = "datavault-k3s-node"
 }
 
 

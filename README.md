@@ -91,6 +91,13 @@ datavault-gitops/
 │       └── tests/
 │           └── test_main.py
 ├── k8s/                    # Kubernetes manifests (Day 3)
+│   ├── namespace-dev.yaml  # datavault-dev namespace
+│   ├── configmap.yaml      # Non-sensitive environment config
+│   ├── secret.yaml         # Sensitive config — gitignored
+│   ├── secret-example.yaml # Template for secret.yaml — safe to commit
+│   ├── deployment.yaml     # 2 replicas, RollingUpdate, liveness + readiness probes
+│   ├── service.yaml        # NodePort 30080
+│   └── hpa.yaml            # Autoscaler — scales 2→5 at 70% CPU
 ├── .github/workflows/      # GitHub Actions CI pipeline (Day 5)
 ├── .tfsec/config.yml       # tfsec security scan config
 ├── JOURNAL.md              # Daily engineering log
@@ -113,7 +120,67 @@ datavault-gitops/
 
 ---
 
-## Kubernetes Cluster Setup (k3s)
+## Kubernetes Manifests
+
+All manifests live in `k8s/` and target the `datavault-dev` namespace. Apply the namespace first, then the rest in any order.
+
+### Manifest overview
+
+| File | Kind | Purpose |
+|---|---|---|
+| `namespace-dev.yaml` | Namespace | Isolates all DataVault resources from kube-system and default |
+| `configmap.yaml` | ConfigMap | `APP_ENV`, `LOG_LEVEL`, `DB_HOST`, `PORT` injected as env vars |
+| `secret.yaml` | Secret | `API_KEY`, `DB_URL` — base64-encoded, gitignored |
+| `secret-example.yaml` | Secret | Placeholder template — safe to commit, shows structure |
+| `deployment.yaml` | Deployment | 2 replicas, RollingUpdate, liveness + readiness probes |
+| `service.yaml` | Service | NodePort 30080 — app reachable at `<ec2_ip>:30080` |
+| `hpa.yaml` | HorizontalPodAutoscaler | Scales 2→5 replicas when CPU exceeds 70% |
+
+### Apply to the cluster
+
+```bash
+# Copy manifests to EC2 (from local machine)
+scp -i ~/.ssh/datavault-key.pem -r k8s ubuntu@<ec2_public_ip>:~/
+
+# Apply on EC2 (namespace first, then the rest)
+kubectl apply -f k8s/namespace-dev.yaml
+kubectl apply -f k8s/
+
+# Set namespace as default to avoid -n flag on every command
+kubectl config set-context --current --namespace=datavault-dev
+```
+
+### Verify
+
+```bash
+kubectl get all -n datavault-dev
+# Should show: 2 pods Running, Service NodePort, HPA watching at 2 replicas
+```
+
+### Self-healing demo
+
+```bash
+# Delete a pod — simulates a crash
+kubectl delete pod <pod-name> -n datavault-dev
+
+# Watch Kubernetes replace it automatically
+kubectl get pods -w -n datavault-dev
+# New pod reaches Running in ~14 seconds
+```
+
+### Key design decisions
+
+**Namespace isolation** — all resources in `datavault-dev`. RBAC, quotas, and network policies can be scoped to the namespace. Prevents accidental operations on system namespaces.
+
+**ConfigMap + Secret separation** — non-sensitive config in ConfigMap (visible in plaintext), sensitive config in Secret (base64-encoded, gitignored). In production, Secrets would be managed by External Secrets Operator pulling from AWS Secrets Manager.
+
+**Liveness vs readiness probes** — liveness (`/health`) restarts a broken pod. Readiness (`/ready`) removes a not-yet-ready pod from the Service endpoint list without restarting it. The distinction prevents traffic from reaching a pod that is starting up but not yet ready.
+
+**RollingUpdate** — deploys new pods one at a time, waiting for readiness before terminating old ones. With 2 replicas, at least 1 pod is always serving traffic during a deployment. This is the direct fix for DataVault's Valentine's Day sequential-server-restart problem.
+
+**`secret.yaml` is gitignored** — if the file was previously committed, run `git rm --cached k8s/secret.yaml` to stop tracking it. The `.gitignore` entry alone is not sufficient for already-tracked files.
+
+---
 
 k3s is installed directly on the EC2 instance. It turns the bare Ubuntu server into a fully certified Kubernetes cluster with a single command.
 

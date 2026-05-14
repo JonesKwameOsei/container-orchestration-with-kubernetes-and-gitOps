@@ -219,16 +219,6 @@ The Terraform wiring (`aws_secretsmanager_secret_rotation`, `aws_lambda_permissi
 
 ---
 
-### Tomorrow — Day 2
-
-- `k8s/deployment.yaml` — Kubernetes Deployment with liveness and readiness probes
-- `k8s/service.yaml` — NodePort Service to expose the app
-- `k8s/configmap.yaml` — non-sensitive environment configuration
-- `k8s/secret.yaml` — sensitive configuration (base64 encoded)
-- `k8s/hpa.yaml` — Horizontal Pod Autoscaler
-
----
-
 ## Week 1, Day 2 — k3s Setup + DataVault Application + Dockerfile
 
 **Date:** 13 May 2026
@@ -239,6 +229,7 @@ The Terraform wiring (`aws_secretsmanager_secret_rotation`, `aws_lambda_permissi
 ### What Was Built
 
 Build the DataVault application layer:
+
 - `app/main.py` — the API simulation
 - `app/Dockerfile` — containerise the application
 
@@ -419,7 +410,98 @@ After installation, `kubectl get pods -A` showed:
 
 `Completed` status on the Helm install jobs is correct — these are one-off Jobs, not long-running services. `metrics-server` being pre-installed is a k3s advantage — on standard Kubernetes it requires a separate install step, and without it the HPA cannot function.
 
-![get-pods](images/k3s-running.png)
+After SSHed and once in the instance, k3s can be installed with
+
+```bash
+curl -sfL https://get.k3s.io | sh -
+```
+
+**What this command does:**
+
+- Downloads the k3s install script from the official source
+- Installs the k3s binary to /usr/local/bin/k3s
+- Creates a systemd service called k3s that starts automatically on boot
+- Generates a kubeconfig file at k3s.yaml
+- Starts the Kubernetes control plane and a single worker node (same machine — single-node cluster)
+
+**Verify k3s is running**
+
+```bash
+sudo systemctl status k3s
+```
+
+![k3s-status-active](images/k3s-status-active.png)
+
+or simply confirm with:
+
+```bash
+ sudo systemctl is-enabled k3s
+```
+
+**Output**
+
+```bash
+enabled
+```
+
+**Verify the node is Ready**
+
+```bash
+sudo kubectl get nodes
+```
+
+**Output**
+
+```bash
+NAME                 STATUS   ROLES           AGE   VERSION
+datavault-k3s-node   Ready    control-plane   13m   v1.35.4+k3s1
+```
+
+**Configure kubectl without sudo**: This is done to change the ownership of the `kubeconfig` at k3s.yaml from root to ubuntu user so that kubectl can be ran without `sudo`.
+
+```bash
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown ubuntu:ubuntu ~/.kube/config
+chmod 600 ~/.kube/config
+export KUBECONFIG=~/.kube/config
+echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Now `sudo` is not needed.
+
+```bash
+kubectl get nodes
+```
+
+**Output**
+
+```bash
+NAME                 STATUS   ROLES           AGE   VERSION
+datavault-k3s-node   Ready    control-plane   26m   v1.35.4+k3s1
+```
+
+![k3s-no-sudo](images/k3s-configure-no-sudo.png)
+
+**Get all what k3s is running in the cluster as pods**
+
+```bash
+kubectl get pods -A
+```
+
+```bash
+NAMESPACE     NAME                                      READY   STATUS      RESTARTS   AGE
+kube-system   coredns-c4dbffb5f-9fgrh                   1/1     Running     0          35m
+kube-system   helm-install-traefik-8wrgd                0/1     Completed   0          35m
+kube-system   helm-install-traefik-crd-ntbwz            0/1     Completed   0          35m
+kube-system   local-path-provisioner-5c4gc5d66d-z6dz5   1/1     Running     0          35m
+kube-system   metrics-server-786d997795-j9ssj           1/1     Running     0          35m
+kube-system   svclb-traefik-12d80b6e-xnxdf              2/2     Running     0          35m
+kube-system   traefik-9bcdbbd9-5f83k                    1/1     Running     0          35m
+```
+
+> The `metrics-server` is the component needed for the `HPA`.
 
 ---
 
@@ -446,4 +528,399 @@ Write all five Kubernetes manifests:
 
 Apply all manifests to the k3s cluster and verify pods are running.
 
+## Week 1, Day 3 — Writing the Kubernetes Manifests
+
+**Date:** 14 May 2026
+**Sprint Goal:** Write all five Kubernetes manifests, apply them to the k3s cluster, verify all pods are running, demonstrate self-healing, and confirm the HPA is watching.
+
 ---
+
+### What Was Built
+
+| Manifest | Purpose |
+|---|---|
+| `k8s/namespace-dev.yaml` | Dedicated namespace `datavault-dev` — isolates all DataVault resources from kube-system |
+| `k8s/configmap.yaml` | Non-sensitive environment configuration injected into pods at runtime |
+| `k8s/secret.yaml` | Sensitive configuration (API key, DB URL) stored as base64-encoded Opaque secret |
+| `k8s/deployment.yaml` | 2 replicas, RollingUpdate strategy, liveness and readiness probes |
+| `k8s/service.yaml` | NodePort service exposing the app on port 30080 of the EC2 instance |
+| `k8s/hpa.yaml` | Horizontal Pod Autoscaler — scales 2→5 replicas when CPU exceeds 70% |
+
+All manifests applied to the k3s cluster. Both pods reached `Running` state. Self-healing demonstrated — deleted pod replaced within 14 seconds.
+
+---
+
+### Architecture Decisions
+
+**Why a dedicated namespace?**
+Kubernetes namespaces are virtual clusters within a physical cluster. Without a namespace, all resources land in `default` alongside any other workloads. `datavault-dev` isolates DataVault resources — RBAC policies, resource quotas, and network policies can all be scoped to the namespace. It also prevents accidental `kubectl delete all` from wiping system components. Every `kubectl` command must include `-n datavault-dev` or the context default namespace must be set — this is intentional friction that prevents operating on the wrong namespace.
+
+**Why ConfigMap for non-sensitive config and Secret for sensitive config?**
+The separation is both a security boundary and an operational one. ConfigMap values are stored in plaintext in etcd and visible to anyone with `kubectl get configmap`. Secret values are base64-encoded — not encrypted by default, but the separation signals intent and enables different RBAC policies. In production, Secrets would be managed by External Secrets Operator pulling from AWS Secrets Manager, keeping actual credentials out of the cluster entirely. For this project the pattern is correct even if the values are placeholders.
+
+**Why `envFrom` instead of individual `env` entries?**
+`envFrom` injects the entire ConfigMap or Secret as environment variables in one block. Individual `env` entries require listing every key explicitly. For a growing application with many config values, `envFrom` is cleaner and less error-prone. The tradeoff is that all keys in the ConfigMap/Secret become environment variables — including any future additions — so naming discipline matters.
+
+**Why 2 replicas as the baseline?**
+A single replica means any pod restart — whether from a crash, a deployment, or node maintenance — causes a brief outage. Two replicas means one pod can be down while the other continues serving traffic. This is the minimum for zero-downtime deployments and the minimum the HPA will ever scale down to.
+
+**Why RollingUpdate with `maxUnavailable: 1` and `maxSurge: 1`?**
+During a deployment, Kubernetes starts one new pod, waits for it to pass the readiness probe, then terminates one old pod. With 2 replicas, this means traffic is always served by at least 1 pod throughout the rollout. This is the direct technical answer to DataVault's Valentine's Day problem — the old process took all three servers offline sequentially. RollingUpdate keeps the service alive throughout.
+
+**Why liveness and readiness as separate probes on different paths?**
+They answer different questions and trigger different responses. The liveness probe (`/health`) asks "is this process alive?" — failure causes a pod restart. The readiness probe (`/ready`) asks "is this pod ready for traffic?" — failure removes the pod from the Service's endpoint list without restarting it. A pod that is alive but not yet ready (e.g., still warming up a cache) should not receive traffic but should not be killed. Separating the probes gives Kubernetes the precision to handle both cases correctly.
+
+**Why NodePort instead of LoadBalancer?**
+`LoadBalancer` type on a plain EC2 instance without the AWS Load Balancer Controller would stay in `Pending` indefinitely — it expects a cloud provider to provision an external load balancer, which doesn't happen on a bare k3s install. NodePort works on any Kubernetes cluster by exposing the service directly on the node's IP at a port in the 30000-32767 range. Port 30080 was chosen and was already open in the security group from Day 1.
+
+**Why `autoscaling/v2` for the HPA?**
+v1 only supports CPU-based scaling. v2 supports CPU, memory, and custom metrics (e.g., requests per second from Prometheus). Using v2 now means the HPA can be extended to memory or custom metrics without rewriting the manifest. The 70% CPU threshold gives headroom — pods start scaling before they are saturated, so new pods are ready before the existing ones are overwhelmed.
+
+---
+
+### Problems Encountered
+
+**`secret.yaml` still tracked by Git despite `.gitignore` entry**
+Adding a file to `.gitignore` only prevents future tracking — it has no effect on files already tracked by Git. The file had been staged in a previous commit. Resolution: `git rm --cached k8s/secret.yaml` removes the file from Git's index without deleting it from disk. After committing that removal, the `.gitignore` entry takes effect and the file no longer appears in `git status`.
+
+**`kubectl get svc` returning "not found"**
+All manifests use `namespace: datavault-dev`. Running `kubectl get svc datavault-svc` without specifying the namespace defaults to the `default` namespace where the service does not exist. Resolution: always append `-n datavault-dev` or set the context default namespace with `kubectl config set-context --current --namespace=datavault-dev`.
+
+**Secrets Manager blocking `terraform apply` after `terraform destroy`**
+After destroying and re-applying the infrastructure, Terraform failed to recreate the `datavault/dev-deployer` secret because AWS schedules secrets for deletion with a recovery window rather than deleting them immediately. The name remains reserved during the window. Resolution: force-delete the pending secret with `aws secretsmanager delete-secret --force-delete-without-recovery`, then set `recovery_window_in_days = 0` in `ssm.tf` for dev environments to prevent recurrence.
+
+---
+
+### What Was Learned Today
+
+- Kubernetes namespaces are not just organisational — they are a security and operational boundary. Every resource must be namespace-aware.
+- `kubectl` defaults to the `default` namespace silently. Always specify `-n <namespace>` or set the context default to avoid operating on the wrong resources.
+- ConfigMap and Secret separation is a security pattern, not just a naming convention — different RBAC policies can be applied to each.
+- The liveness/readiness probe split gives Kubernetes surgical precision: restart a broken pod, but don't kill a pod that is merely starting up.
+- `git rm --cached` is the correct way to stop tracking a file that was previously committed — `.gitignore` alone is not enough.
+- AWS Secrets Manager's recovery window is a safety feature that becomes an obstacle in dev environments — `recovery_window_in_days = 0` is the correct setting for non-production.
+- Self-healing is not magic — it is the Deployment controller continuously reconciling actual state against desired state. The pod was replaced in 14 seconds because the readiness probe confirmed the new pod was ready before traffic was routed to it.
+
+---
+
+### Tomorrow — Day 4
+
+Install ArgoCD on the k3s cluster and connect it to the GitHub repository:
+- Install ArgoCD into the cluster
+- Access the ArgoCD UI
+- Create an ArgoCD Application pointing at the `k8s/` folder in the GitHub repo
+- Verify ArgoCD shows the application as `Synced` and `Healthy`
+- Make a change to a manifest, push to GitHub, and watch ArgoCD deploy it automatically
+
+---
+
+```bash
+scp -i ~/.ssh/datavault-key.pem -r k8s ubuntu@<ec2_public_ip>:~/
+```
+
+**Output**
+
+```bash
+configmap.yaml                                    100%  652    35.5KB/s   00:00    
+deployment.yaml                                   100% 2361   157.8KB/s   00:00    
+hpa.yaml                                          100%  453    29.2KB/s   00:00    
+namespace-dev.yaml                                100%  101     6.7KB/s   00:00    
+secret-example.yaml                               100%  334    25.2KB/s   00:00    
+secret.yaml                                       100%  410    30.1KB/s   00:00    
+service.yaml                                      100%  327    24.9KB/s   00:00  
+```
+
+On the remote server, we can confirm with:
+
+```bash
+ls -la k8s/
+```
+
+**Output**
+
+```bash
+total 36
+drwxr-xr-x 2 ubuntu ubuntu 4096 May 13 06:38 .
+drwxr-x--- 6 ubuntu ubuntu 4096 May 13 06:38 ..
+-rw-r--r-- 1 ubuntu ubuntu  652 May 13 06:38 configmap.yaml
+-rw-r--r-- 1 ubuntu ubuntu 2361 May 13 06:38 deployment.yaml
+-rw-r--r-- 1 ubuntu ubuntu  453 May 13 06:38 hpa.yaml
+-rw-r--r-- 1 ubuntu ubuntu  101 May 13 06:38 namespace-dev.yaml
+-rw-r--r-- 1 ubuntu ubuntu  334 May 13 06:38 secret-example.yaml
+-rw-r--r-- 1 ubuntu ubuntu  410 May 13 06:38 secret.yaml
+-rw-r--r-- 1 ubuntu ubuntu  327 May 13 06:38 service.yaml
+```
+
+___
+
+## Apply the manifests to the cluster
+
+First apply the namespace manifest to the k3s cluster. Order matters — ConfigMap and Secret must exist before the Deployment tries to reference them.
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/hpa.yaml
+```
+
+or Apply the namespace first then use:
+
+```bash
+kubectl apply -f k8s/
+```
+
+**Output**
+
+```bash
+configmap/datavault-config created
+secret/datavault-secret created
+deployment.apps/datavault-api created
+horizontalpodautoscaler.autoscaling/datavault-hpa created
+namespace/datavault-dev unchanged
+service/datavault-svc created
+```
+
+___
+
+### Verify everything is running as expected
+
+**Check pods**
+
+```bash
+kubectl get pods -n datavault-dev
+```
+
+**Outputs**
+
+```bash
+NAME                            READY   STATUS    RESTARTS   AGE
+datavault-api-5cf975678-hsxkj   1/1     Running   0          4m8s
+datavault-api-5cf975678-pjhnf   1/1     Running   0          4m8s
+```
+
+`READY: 1/1` means 1 container running out of 1 defined. Both pods Running with 0 restarts is the healthy state.
+
+**Check the Deployment**:
+
+```bash
+kubectl get deployment -n datavault-dev
+```
+
+**Output**:
+
+```bash
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+datavault-api   2/2     2            2           30m
+```
+
+2/2 — both desired replicas are ready.
+
+**Check the Service**:
+
+```bash
+kubectl get svc datavault-svc -n datavault-dev
+```
+
+**Output**:
+
+```bash
+datavault-svc   NodePort   10.x.x.x   <none>        80:30000/TCP   39m
+```
+
+**Check the HPA**:
+
+```bash
+kubectl get hpa -n datavault-dev
+```
+
+**Output**:
+
+```bash
+NAME            REFERENCE                  TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+datavault-hpa   Deployment/datavault-api   cpu: 5%/70%   2         5         2          44m
+```
+
+`5%/70%` - current CPU is 5%, threshold is 70%. 2 replicas running. HPA is watching.
+
+**Check ConfigMap and Secret were created:**
+
+```bash
+ kubectl get configmap datavault-config -n datavault-dev
+```
+
+**Output**:
+
+```bash
+NAME               DATA   AGE
+datavault-config   4      51m
+```
+
+```bash
+ kubectl get secret datavault-secret -n datavault-dev
+```
+
+**Output**:
+
+```bash
+NAME               TYPE     DATA   AGE
+datavault-secret   Opaque   2      51m
+```
+
+---
+
+### Test the Live application
+
+We will try to hit the API through the NodePort:
+
+**Health check**:
+
+```bash
+ curl http://<ec2_public_ip>:30080/health
+```
+
+**Output**:
+
+```plaintext
+{"status":"ok","service":"datavault-api","version":"x.x.x","environment":"production","uptime_seconds":4026,"timestamp":"2026-05-14T09:52:30.433223+00:00","audit_entries":3} 
+```
+
+**Audit entries**:
+
+```bash
+curl -N "x-api-key: datavault-dev-key"  http://<ec2_public_ip>:30080/health
+```
+
+**Output**:
+
+```plaintext
+curl: (3) URL rejected: Malformed input to a URL function
+{"status":"ok","service":"datavault-api","version":"x.x.x","environment":"production","uptime_seconds":4203,"timestamp":"2026-05-14T09:55:26.623126+00:00","audit_entries":3}
+```
+
+**Deployment status - shows which pod responded**:
+
+```bash
+curl http://<ec2_public_ip>:30080/api/deployment/status
+```
+
+**Output**:
+
+```plaintext
+{"version":"x.x.x","environment":"production","deployed_at":"2026-05-14T10:00:34.966562+00:00","pod_name":"datavault-api-5cf975678-pjhnf","git_commit":"unknown","message":"This version was deployed via GitOps — every change is a Git commit."}
+```
+
+The deployment/status endpoint returns pod_name (datavault-api-5cf975678-pjhnf) — the hostname of the pod that handled the request. Running it a few times will alternate between the two pod names as the Service load-balances across them.
+
+**Running it again returns the name of the other pod shown in the output below:
+
+```bash
+{"version":"2.4.1","environment":"production","deployed_at":"2026-05-14T10:05:53.806675+00:00","pod_name":"datavault-api-5cf975678-hsxkj","git_commit":"unknown","message":"This version was deployed via GitOps — every change is a Git commit."}
+```
+
+## Demonstrate self-healing
+
+**Get the pod names**:
+
+```bash
+kubectl get pods -n datavault-dev
+```
+
+**Output**
+
+```bash
+NAME                            READY   STATUS    RESTARTS   AGE
+datavault-api-5cf975678-hsxkj   1/1     Running   0          86m
+datavault-api-5cf975678-pjhnf   1/1     Running   0          86m
+```
+
+**Delete one pod — simulates a crash**
+
+```bash
+kubectl delete pod datavault-api-5cf975678-hsxkj -n datavault-dev
+kubectl get pods -w -n datavault-dev
+```
+
+**Output**
+
+```bash
+pod "datavault-api-5cf975678-hsxkj" deleted from datavault-dev namespace
+```
+
+```bash
+NAME                            READY   STATUS              RESTARTS   AGE
+datavault-api-5cf975678-8t57s   0/1     ContainerCreating   0          1s
+datavault-api-5cf975678-pjhnf   1/1     Running             0          98m
+datavault-api-5cf975678-8t57s   0/1     Running             0          2s
+datavault-api-5cf975678-8t57s   1/1     Running             0          14s
+```
+
+A new pod appears within seconds. The Deployment's desired state is 2 replicas — Kubernetes immediately works to restore that.
+
+## Inspect pod details and logs
+
+**Detailed view of a pod — shows probe status, events, resource usage**
+
+```bash
+kubectl describe pod datavault-api-5cf975678-8t57s
+```
+
+```
+Events:
+  Type    Reason     Age   From               Message
+  ----    ------     ----  ----               -------
+  Normal  Scheduled  10m   default-scheduler  Successfully assigned datavault-dev/datavault-api-5cf975678-8t57s to datavault-k3s-node
+  Normal  Pulling    10m   kubelet            spec.containers{datavault-api}: Pulling image "kwameds/datavault-api:1.0.0"
+  Normal  Pulled     10m   kubelet            spec.containers{datavault-api}: Successfully pulled image "kwameds/datavault-api:1.0.0" in 549ms (549ms including waiting). Image size: 49408348 bytes.
+  Normal  Created    10m   kubelet            spec.containers{datavault-api}: Container created
+  Normal  Started    10m   kubelet            spec.containers{datavault-api}: Container started
+```
+
+**Application logs from a pod**
+
+```bash
+kubectl logs datavault-api-5cf975678-8t57s
+```
+
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started parent process [1]
+INFO:     Started server process [9]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Started server process [10]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     10.42.0.1:50344 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:50352 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:40046 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:52836 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:52852 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:57036 - "GET /ready HTTP/1.1" 200 OK
+```
+
+**Follow logs in real time (like tail -f)**
+
+```bash
+kubectl logs datavault-api-5cf975678-8t57s -f
+```
+
+**Logs from both pods simultaneously**
+
+```bash
+kubectl logs -l app=datavault-api --prefix=true
+```
+
+```plaintext
+[pod/datavault-api-5cf975678-8t57s/datavault-api] INFO:     10.42.0.1:50190 - "GET /ready HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-8t57s/datavault-api] INFO:     10.42.0.1:48530 - "GET /ready HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-8t57s/datavault-api] INFO:     10.42.0.1:48542 - "GET /health HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-pjhnf/datavault-api] INFO:     10.42.0.1:56574 - "GET /ready HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-pjhnf/datavault-api] INFO:     10.42.0.1:60202 - "GET /ready HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-pjhnf/datavault-api] INFO:     10.42.0.1:60208 - "GET /health HTTP/1.1" 200 OK
+[pod/datavault-api-5cf975678-pjhnf/datavault-api] INFO:     10.42.0.1:41804 - "GET /ready HTTP/1.1" 200 OK
+```
+
+> From this demonstration, we observed self-healing in action: the liveness probe detects the crash, the Deployment controller starts a replacement, and the readiness probe gates traffic until the new pod is ready. No human intervention is required.

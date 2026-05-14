@@ -185,11 +185,11 @@ resource "aws_instance" "k3s_node" {
   vpc_security_group_ids      = [aws_security_group.k3s_sg.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
   associate_public_ip_address = true
-  user_data                   = templatefile("user_data.tftpl", { 
-    department = var.user_department 
-    name = var.user_name 
-    hostname = var.hostname
-    })
+  user_data = templatefile("user_data.tftpl", {
+    department = var.user_department
+    name       = var.user_name
+    hostname   = var.hostname
+  })
 
   # IMDSv2 — require session token for all metadata requests.
   # Blocks SSRF attacks that attempt to steal IAM credentials via the metadata endpoint.
