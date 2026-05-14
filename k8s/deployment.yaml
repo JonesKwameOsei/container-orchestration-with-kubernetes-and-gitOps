@@ -8,7 +8,7 @@ metadata:
     apiVersion: "1.0.0"
     managed-by: kubectl
 spec:
-  replicas: 2 # when one crashes, other receives traffic (k8s restrts the crash one) - zero downtime
+  replicas: 3 # when one crashes, other receives traffic (k8s restrts the crash one) - zero downtime
   selector:
     matchLabels:
       app: datavault-api
