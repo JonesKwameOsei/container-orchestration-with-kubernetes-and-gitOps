@@ -1,0 +1,30 @@
+###############################################################################
+# .tfsec/config.yml
+#
+# PURPOSE: tfsec static analysis configuration.
+#
+# tfsec scans Terraform code for security misconfigurations BEFORE deployment.
+#
+# INSTALL:
+#   brew install tfsec                    # macOS
+#   choco install tfsec                   # Windows
+#   docker pull aquasec/tfsec             # Docker
+#
+# RUN:
+#   tfsec ./infra                         # Scan the infra workspace
+#   tfsec ./infra --format lovely         # Human-readable output
+#   tfsec ./infra --format json           # Machine-readable for CI
+#   tfsec ./infra --minimum-severity HIGH # Only fail on HIGH+
+###############################################################################
+
+minimum_severity: MEDIUM
+
+exclude:
+  # aws-s3-enable-bucket-logging: Bootstrap bucket logging creates a circular
+  # dependency (you'd need another bucket to log to). Acceptable for state bucket.
+  - aws-s3-enable-bucket-logging
+
+  # aws-ec2-no-public-egress-sgr: EC2 requires unrestricted egress to reach
+  # AWS APIs (Secrets Manager, SSM, CloudWatch), package repos, and external
+  # services. Restricting egress would break the application. Acceptable.
+  - aws-ec2-no-public-egress-sgr
