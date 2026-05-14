@@ -7,6 +7,7 @@ metadata:
   namespace: datavault-dev
   labels:
     app: datavault-api
+    managed-by: kubectl
 data:
   # Application environment - controls logging verbosity and behaviour 
   APP_ENV: "production"
