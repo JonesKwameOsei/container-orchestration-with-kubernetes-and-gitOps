@@ -8,16 +8,17 @@ metadata:
     apiVersion: "1.0.0"
     managed-by: kubectl
 spec:
-  replicas: 3 # when one crashes, other receives traffic (k8s restrts the crash one) - zero downtime
+  replicas: 2 # when one crashes, other receives traffic (k8s restrts the crash one) - zero downtime
   selector:
     matchLabels:
       app: datavault-api
   strategy:
     type: RollingUpdate
-    # Never have fewer than 1 pod running during a deployment
-    maxUnavailable: 1
-    # Never run more than 4 pods total during a deployment (3 + 1)
-    maxSurge: 1
+    rollingUpdate:
+      # Never have fewer than 1 pod running during a deployment
+      maxUnavailable: 1
+      # Never run more than 4 pods total during a deployment (3 + 1)
+      maxSurge: 1
   template:
     metadata:
       labels:
@@ -26,7 +27,7 @@ spec:
     spec:
       containers:
         - name: datavault-api
-          image: kwameds/datavault:1.0.0
+          image: kwameds/datavault-api:1.0.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -40,7 +41,7 @@ spec:
                 name: datavault-secret
           # ── Resource Limits ──────────────────────────────-──────────
           resources:
-            request:
+            requests:
               cpu: "100m"
               memory: "128Mi"
             limits:
@@ -64,4 +65,3 @@ spec:
             periodSeconds: 10
             failureThreshold: 3
             timeoutSeconds: 5
-      restartPolicy: Always
