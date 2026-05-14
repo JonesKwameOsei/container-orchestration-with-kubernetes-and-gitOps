@@ -24,8 +24,14 @@ spec:
   syncPolicy:
     automated:
       # Automatically sync when ArgoCD detects a diff between Git and cluster
-      prune: true       # delete resources that exist in cluster but not in Git
-      selfHeal: true    # re-apply if someone manually changes the cluster state
+      prune: true # delete resources that exist in cluster but not in Git
+      selfHeal: true # re-apply if someone manually changes the cluster state
 
     syncOptions:
-      - CreateNamespace=true   # create datavault-dev if it doesn't exist
+      - CreateNamespace=true # create datavault-dev if it doesn't exist
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: datavault-api
+      jsonPointers:
+        - /spec/replicas
