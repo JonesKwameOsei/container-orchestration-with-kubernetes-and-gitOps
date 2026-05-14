@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datavault-api
+  namespace: datavault-dev
+  labels:
+    app: datavault-api
+    apiVersion: "1.0.0"
+    managed-by: kubectl
+spec:
+  replicas: 3 # when one crashes, other receives traffic (k8s restrts the crash one) - zero downtime
+  selector:
+    matchLabels:
+      app: datavault-api
+  strategy:
+    type: RollingUpdate
+    # Never have fewer than 1 pod running during a deployment
+    maxUnavailable: 1
+    # Never run more than 4 pods total during a deployment (3 + 1)
+    maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: datavault-api
+        version: "1.0.0"
+    spec:
+      containers:
+        - name: datavault-api
+          image: kwameds/datavault:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          # ── Environment from ConfigMap ──────────────────────────────
+          envFrom:
+            - configMapRef:
+                name: datavault-config
+            - secretRef:
+                name: datavault-secret
+          # ── Resource Limits ──────────────────────────────-──────────
+          resources:
+            request:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          # ── Liveness Probe ──────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # ── Readiness Probe ─────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+      restartPolicy: Always
