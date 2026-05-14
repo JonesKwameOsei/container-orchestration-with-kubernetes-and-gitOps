@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: datavault-api
+  namespace: argocd
+  labels:
+    app: datavault-api
+spec:
+  # The ArgoCD project — default is fine for a single-app setup
+  project: default
+
+  # Where to get the desired state from — your GitHub repo
+  source:
+    repoURL: https://github.com/JonesKwameOsei/container-orchestration-with-kubernetes-and-gitOps
+    targetRevision: main
+    # The folder inside the repo containing the manifests to sync
+    path: k8s
+
+  # Where to deploy to — the k3s cluster ArgoCD is running in
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: datavault-dev
+
+  syncPolicy:
+    automated:
+      # Automatically sync when ArgoCD detects a diff between Git and cluster
+      prune: true       # delete resources that exist in cluster but not in Git
+      selfHeal: true    # re-apply if someone manually changes the cluster state
+
+    syncOptions:
+      - CreateNamespace=true   # create datavault-dev if it doesn't exist
