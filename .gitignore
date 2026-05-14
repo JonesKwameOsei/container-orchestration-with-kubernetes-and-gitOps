@@ -39,5 +39,5 @@ tfplan
 # Internal step-by-step walkthroughs. Not part of the project deliverables.
 procedure/
 
-
+k8s/secret.yaml
 
