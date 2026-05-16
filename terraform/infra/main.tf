@@ -5,6 +5,7 @@
 resource "aws_ecr_repository" "datavault_api" {
   name                 = "${var.project_name}-api"
   image_tag_mutability = var.immutability
+  force_delete         = true   # delete all images on terraform destroy
 
   image_scanning_configuration {
     scan_on_push = true

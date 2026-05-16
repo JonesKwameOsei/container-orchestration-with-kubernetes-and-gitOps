@@ -60,6 +60,60 @@ chmod +x /usr/local/bin/argocd
 
 echo "=== Bootstrap complete: $(date) ==="
 
+# ── Configure ECR registry authentication for k3s ─────────────────────────
+# k3s/containerd needs explicit credentials to pull from private ECR.
+# The IAM instance profile grants permission, but containerd needs the token.
+# A cron job refreshes the token every 10 hours (ECR tokens expire at 12).
+echo "Configuring ECR registry authentication..."
+ECR_PASSWORD=$(aws ecr get-login-password --region eu-west-2)
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_REGISTRY="$${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
+
+cat > /etc/rancher/k3s/registries.yaml <<REGISTRY
+mirrors:
+  "$${ECR_REGISTRY}":
+    endpoint:
+      - "https://$${ECR_REGISTRY}"
+configs:
+  "$${ECR_REGISTRY}":
+    auth:
+      username: AWS
+      password: $${ECR_PASSWORD}
+REGISTRY
+
+# Create refresh script — ECR tokens expire every 12 hours
+cat > /usr/local/bin/refresh-ecr-token.sh <<'REFRESH'
+#!/bin/bash
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
+PASSWORD=$(aws ecr get-login-password --region eu-west-2)
+cat > /etc/rancher/k3s/registries.yaml <<EOF
+mirrors:
+  "${ECR_REGISTRY}":
+    endpoint:
+      - "https://${ECR_REGISTRY}"
+configs:
+  "${ECR_REGISTRY}":
+    auth:
+      username: AWS
+      password: ${PASSWORD}
+EOF
+systemctl restart k3s
+REFRESH
+
+chmod +x /usr/local/bin/refresh-ecr-token.sh
+echo "0 */10 * * * root /usr/local/bin/refresh-ecr-token.sh" > /etc/cron.d/ecr-refresh
+
+# Restart k3s to pick up the registry config
+systemctl restart k3s
+
+# Wait for k3s to be ready again after restart
+echo "Waiting for k3s to be ready after registry config..."
+sleep 10
+until kubectl get nodes 2>/dev/null | grep -q "Ready"; do
+  sleep 5
+done
+
 # ── Install ArgoCD ─────────────────────────────────────────────────────────
 # user_data runs as root — must explicitly set KUBECONFIG for root's kubectl
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
