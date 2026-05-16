@@ -42,11 +42,9 @@ jobs:
           terraform_version: "~1.10"
 
       - name: Inject bucket name into backend.tf
-        working-directory: terraform/bootstrap
+        working-directory: terraform/infra
         run: |
-          terraform init
-          BUCKET=$(terraform output -raw state_bucket_name)
-          sed -i "s|BUCKET_NAME_PLACEHOLDER|${BUCKET}|g" ../infra/backend.tf
+          sed -i "s|BUCKET_NAME_PLACEHOLDER|${{ secrets.TF_STATE_BUCKET }}|g" backend.tf
 
       - name: Create terraform.tfvars
         working-directory: terraform/infra
@@ -66,11 +64,3 @@ jobs:
       - name: Terraform destroy (infra)
         working-directory: terraform/infra
         run: terraform destroy -auto-approve
-
-      - name: Terraform destroy (bootstrap)
-        working-directory: terraform/bootstrap
-        run: |
-          # Empty the S3 bucket first — can't delete a non-empty bucket
-          BUCKET=$(terraform output -raw state_bucket_name)
-          aws s3 rm "s3://${BUCKET}" --recursive || true
-          terraform destroy -auto-approve
