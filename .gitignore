@@ -41,3 +41,4 @@ procedure/
 
 k8s/secret.yaml
 
+trust-policy.json

@@ -1,0 +1,76 @@
+###############################################################################
+# infra-destroy.yml
+#
+# Manually triggered workflow to destroy all infrastructure.
+# Requires explicit confirmation via input parameter.
+# Never runs automatically — this is a destructive operation.
+###############################################################################
+
+name: Infrastructure Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm teardown'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-2
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'destroy'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+
+      - name: Inject bucket name into backend.tf
+        working-directory: terraform/bootstrap
+        run: |
+          terraform init
+          BUCKET=$(terraform output -raw state_bucket_name)
+          sed -i "s|BUCKET_NAME_PLACEHOLDER|${BUCKET}|g" ../infra/backend.tf
+
+      - name: Create terraform.tfvars
+        working-directory: terraform/infra
+        run: |
+          cat > terraform.tfvars <<EOF
+          environment      = "dev"
+          aws_region       = "eu-west-2"
+          project_name     = "datavault"
+          allowed_ssh_cidr = "${{ secrets.TF_VAR_ALLOWED_SSH_CIDR }}"
+          hostname         = "datavault-k3s"
+          EOF
+
+      - name: Terraform init (infra)
+        working-directory: terraform/infra
+        run: terraform init
+
+      - name: Terraform destroy (infra)
+        working-directory: terraform/infra
+        run: terraform destroy -auto-approve
+
+      - name: Terraform destroy (bootstrap)
+        working-directory: terraform/bootstrap
+        run: |
+          # Empty the S3 bucket first — can't delete a non-empty bucket
+          BUCKET=$(terraform output -raw state_bucket_name)
+          aws s3 rm "s3://${BUCKET}" --recursive || true
+          terraform destroy -auto-approve

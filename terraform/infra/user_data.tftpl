@@ -1,0 +1,98 @@
+#!/bin/bash
+set -euo pipefail
+exec > /var/log/user-data.log 2>&1
+
+echo "=== DataVault k3s Node Bootstrap ==="
+echo "Started: $(date)"
+
+# ── System packages ────────────────────────────────────────────────────────
+apt-get update -y
+apt-get install -y curl unzip awscli
+
+# ── Hostname ───────────────────────────────────────────────────────────────
+hostnamectl set-hostname "${hostname}"
+echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg
+sed -i "s/^127.0.0.1 localhost$/127.0.0.1 localhost ${hostname}/" /etc/hosts
+echo "Hostname set to: ${hostname}"
+
+# ── Install k3s ────────────────────────────────────────────────────────────
+curl -sfL https://get.k3s.io | sh -
+systemctl enable k3s
+systemctl start k3s
+
+# Wait for k3s to be ready before configuring kubectl
+echo "Waiting for k3s to be ready..."
+until kubectl get nodes 2>/dev/null | grep -q "Ready"; do
+  sleep 5
+done
+echo "k3s is ready"
+
+# ── Configure kubectl for ubuntu user (no sudo required) ──────────────────
+mkdir -p /home/ubuntu/.kube
+cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
+chown ubuntu:ubuntu /home/ubuntu/.kube/config
+chmod 600 /home/ubuntu/.kube/config
+
+# Persist KUBECONFIG across all sessions for ubuntu user
+echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.bashrc
+echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.profile
+
+# ── Install kubectl (standalone — for version pinning) ────────────────────
+KUBECTL_VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
+curl -sLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+chmod +x kubectl
+mv kubectl /usr/local/bin/kubectl
+
+# ── Install ArgoCD CLI ─────────────────────────────────────────────────────
+curl -sSL -o /usr/local/bin/argocd \
+  https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+chmod +x /usr/local/bin/argocd
+
+echo "=== Bootstrap complete: $(date) ==="
+
+# ── Install ArgoCD ─────────────────────────────────────────────────────────
+echo "=== Installing ArgoCD ===
+kubectl create namespace argocd
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Wait for ArgoCD to be ready
+echo "Waiting for ArgoCD pods..."
+kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
+
+# Expose ArgoCD UI via NodePort
+kubectl patch svc argocd-server -n argocd \
+  -p '{"spec": {"type": "NodePort"}}'
+
+# ── Apply ArgoCD Application (points to GitHub k8s/ folder) ────────────────
+# ArgoCD will then sync all manifests from Git automatically.
+cat <<'ARGOAPP' | kubectl apply -f -
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: datavault-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/JonesKwameOsei/container-orchestration-with-kubernetes-and-gitOps.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: datavault-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: datavault-api
+      jsonPointers:
+        - /spec/replicas
+ARGOAPP
+
+echo "=== ArgoCD installed. GitOps loop active. ==="

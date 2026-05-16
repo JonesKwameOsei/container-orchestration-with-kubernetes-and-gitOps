@@ -15,7 +15,7 @@
 
 terraform {
   backend "s3" {
-    bucket       = "datavault-tfstate-dev-f2c8b547"
+    bucket       = "BUCKET_NAME_PLACEHOLDER"
     key          = "datavault/dev/terraform.tfstate"
     region       = "eu-west-2"
     encrypt      = true
