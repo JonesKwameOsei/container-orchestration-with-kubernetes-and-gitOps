@@ -1,75 +1,132 @@
 #!/bin/bash
+################################################################################
+# user_data.tftpl  —  DataVault k3s Node Bootstrap
+#
+# Runs once on first EC2 boot via cloud-init (as root).
+# Every step is pinned to an explicit version for reproducibility.
+# Log: /var/log/user-data.log
+################################################################################
 set -euo pipefail
 exec > /var/log/user-data.log 2>&1
 
-echo "=== DataVault k3s Node Bootstrap ==="
-echo "Started: $(date)"
+# ── Pinned versions ────────────────────────────────────────────────────────────
+K3S_VERSION="v1.32.4+k3s1"       # Kubernetes 1.32.4
+KUBECTL_VERSION="v1.32.4"        # Must match K3S_VERSION
+KUBESEAL_VERSION="0.36.6"
+ARGOCD_VERSION="v2.14.0"
+AWS_REGION="eu-west-2"
 
-# ── System packages ────────────────────────────────────────────────────────
-apt-get update -y
-apt-get install -y curl unzip awscli
+# ── Helpers ────────────────────────────────────────────────────────────────────
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-# ── Hostname ───────────────────────────────────────────────────────────────
+# Error trap — prints the line number so failures are immediately actionable.
+trap 'log "FATAL: bootstrap failed at line $LINENO (exit $?) — tail /var/log/user-data.log"' ERR
+
+# wait_for <description> <timeout_seconds> <command [args...]>
+# Retries command every 5 s until it exits 0 or timeout is reached.
+wait_for() {
+  local desc="$1" timeout="$2"; shift 2
+  local elapsed=0
+  log "Waiting for: $desc (timeout ${timeout}s)..."
+  until "$@" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$timeout" ]; then
+      log "ERROR: timed out waiting for $desc after ${timeout}s"
+      return 1
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  log "Ready: $desc"
+}
+
+# Compound checks used in wait_for — shell functions are visible to wait_for
+# because it runs in the same shell, not a subshell.
+k3s_node_ready()          { kubectl get nodes 2>/dev/null | grep -q ' Ready '; }
+argocd_crd_established()  { kubectl get crd applications.argoproj.io >/dev/null 2>&1; }
+
+log "=== DataVault k3s Bootstrap started ==="
+
+# ── System packages ────────────────────────────────────────────────────────────
+log "Installing system packages..."
+apt-get update -y -qq
+apt-get install -y --no-install-recommends \
+  curl unzip jq tar ca-certificates
+
+# ── AWS CLI v2 ─────────────────────────────────────────────────────────────────
+log "Installing AWS CLI v2..."
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+  -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp/awscliv2
+/tmp/awscliv2/aws/install --update
+rm -rf /tmp/awscliv2 /tmp/awscliv2.zip
+log "AWS CLI version: $(aws --version)"
+
+# ── Hostname ───────────────────────────────────────────────────────────────────
+log "Setting hostname to ${hostname}..."
 hostnamectl set-hostname "${hostname}"
 echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg
 sed -i "s/^127.0.0.1 localhost$/127.0.0.1 localhost ${hostname}/" /etc/hosts
-echo "Hostname set to: ${hostname}"
 
-# ── Install k3s ────────────────────────────────────────────────────────────
-curl -sfL https://get.k3s.io | sh -
+# ── Install k3s (pinned version) ───────────────────────────────────────────────
+log "Installing k3s $${K3S_VERSION}..."
+INSTALL_K3S_VERSION="$${K3S_VERSION}" \
+  curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
 systemctl enable k3s
-systemctl start k3s
 
-# Wait for k3s to be ready before configuring kubectl
-echo "Waiting for k3s to be ready..."
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-until kubectl get nodes 2>/dev/null | grep -q "Ready"; do
-  sleep 5
-done
-echo "k3s is ready"
+wait_for "k3s node Ready" 180 k3s_node_ready
 
-# ── Configure kubectl for ubuntu user (no sudo required) ──────────────────
+# ── kubectl (pinned, checksum-verified) ────────────────────────────────────────
+log "Installing kubectl $${KUBECTL_VERSION}..."
+curl -fsSL "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+  -o /tmp/kubectl
+curl -fsSL "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" \
+  -o /tmp/kubectl.sha256
+echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum --check
+chmod +x /tmp/kubectl
+mv /tmp/kubectl /usr/local/bin/kubectl
+rm -f /tmp/kubectl.sha256
+log "kubectl version: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+
+# ── Configure kubectl for ubuntu user ─────────────────────────────────────────
+log "Configuring kubectl for ubuntu user..."
 mkdir -p /home/ubuntu/.kube
 cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 chown ubuntu:ubuntu /home/ubuntu/.kube/config
 chmod 600 /home/ubuntu/.kube/config
+grep -q 'KUBECONFIG' /home/ubuntu/.bashrc  || \
+  echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.bashrc
+grep -q 'KUBECONFIG' /home/ubuntu/.profile || \
+  echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.profile
 
-# Persist KUBECONFIG across all sessions for ubuntu user
-echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.bashrc
-echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.profile
+# ── kubeseal CLI ───────────────────────────────────────────────────────────────
+log "Installing kubeseal CLI v$${KUBESEAL_VERSION}..."
+curl -fsSL \
+  "https://github.com/bitnami-labs/sealed-secrets/releases/download/v$${KUBESEAL_VERSION}/kubeseal-$${KUBESEAL_VERSION}-linux-amd64.tar.gz" \
+  -o /tmp/kubeseal.tar.gz
+tar -xzf /tmp/kubeseal.tar.gz -C /tmp kubeseal
+install -m 755 /tmp/kubeseal /usr/local/bin/kubeseal
+rm -f /tmp/kubeseal.tar.gz /tmp/kubeseal
+log "kubeseal version: $(kubeseal --version)"
 
-# ── Install kubectl (standalone — for version pinning) ────────────────────
-KUBECTL_VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
-curl -sLO "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-chmod +x kubectl
-mv kubectl /usr/local/bin/kubectl
-
-# ── Install kubeseal CLI ──────────────────────────────────────────────────
-KUBESEAL_VERSION='0.36.6'
-
-curl -OL "https://github.com/bitnami-labs/sealed-secrets/releases/download/v$${KUBESEAL_VERSION}/kubeseal-$${KUBESEAL_VERSION}-linux-amd64.tar.gz"
-
-tar -xvzf kubeseal-$${KUBESEAL_VERSION}-linux-amd64.tar.gz kubeseal
-
-install -m 755 kubeseal /usr/local/bin/kubeseal
-
-# ── Install ArgoCD CLI ─────────────────────────────────────────────────────
-curl -sSL -o /usr/local/bin/argocd \
-  https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+# ── ArgoCD CLI ─────────────────────────────────────────────────────────────────
+log "Installing ArgoCD CLI $${ARGOCD_VERSION}..."
+curl -fsSL \
+  "https://github.com/argoproj/argo-cd/releases/download/$${ARGOCD_VERSION}/argocd-linux-amd64" \
+  -o /usr/local/bin/argocd
 chmod +x /usr/local/bin/argocd
+log "argocd version: $(argocd version --client --short 2>/dev/null || argocd version --client)"
 
-echo "=== Bootstrap complete: $(date) ==="
-
-# ── Configure ECR registry authentication for k3s ─────────────────────────
-# k3s/containerd needs explicit credentials to pull from private ECR.
-# The IAM instance profile grants permission, but containerd needs the token.
-# A cron job refreshes the token every 10 hours (ECR tokens expire at 12).
-echo "Configuring ECR registry authentication..."
-ECR_PASSWORD=$(aws ecr get-login-password --region eu-west-2)
+# ── ECR registry credentials ───────────────────────────────────────────────────
+# k3s/containerd reads registries.yaml dynamically on each image pull —
+# no k3s restart is needed when the token is refreshed.
+log "Configuring ECR registry credentials..."
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REGISTRY="$${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
+ECR_REGISTRY="$${AWS_ACCOUNT_ID}.dkr.ecr.$${AWS_REGION}.amazonaws.com"
+ECR_PASSWORD=$(aws ecr get-login-password --region "$${AWS_REGION}")
 
-cat > /etc/rancher/k3s/registries.yaml <<REGISTRY
+mkdir -p /etc/rancher/k3s
+cat > /etc/rancher/k3s/registries.yaml <<REGEOF
 mirrors:
   "$${ECR_REGISTRY}":
     endpoint:
@@ -78,62 +135,76 @@ configs:
   "$${ECR_REGISTRY}":
     auth:
       username: AWS
-      password: $${ECR_PASSWORD}
-REGISTRY
+      password: "$${ECR_PASSWORD}"
+REGEOF
 
-# Create refresh script — ECR tokens expire every 12 hours
+# Token refresh script — runs every 10 h via cron (tokens expire at 12 h).
+# Writes a fresh token to registries.yaml; containerd picks it up on the next pull.
+# No k3s restart required.
 cat > /usr/local/bin/refresh-ecr-token.sh <<'REFRESH'
 #!/bin/bash
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REGISTRY="$${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
-PASSWORD=$$(aws ecr get-login-password --region eu-west-2)
+set -euo pipefail
+exec >> /var/log/ecr-refresh.log 2>&1
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+log "Refreshing ECR token..."
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+REGION=$(curl -fsSL http://169.254.169.254/latest/meta-data/placement/region)
+REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+TOKEN=$(aws ecr get-login-password --region "${REGION}")
 cat > /etc/rancher/k3s/registries.yaml <<EOF
 mirrors:
-  "$${ECR_REGISTRY}":
+  "${REGISTRY}":
     endpoint:
-      - "https://$${ECR_REGISTRY}"
+      - "https://${REGISTRY}"
 configs:
-  "$${ECR_REGISTRY}":
+  "${REGISTRY}":
     auth:
       username: AWS
-      password: $${PASSWORD}
+      password: "${TOKEN}"
 EOF
-systemctl restart k3s
+log "ECR token refreshed for ${REGISTRY}."
 REFRESH
 
 chmod +x /usr/local/bin/refresh-ecr-token.sh
 echo "0 */10 * * * root /usr/local/bin/refresh-ecr-token.sh" > /etc/cron.d/ecr-refresh
 
-# Restart k3s to pick up the registry config
+# One-time restart to load the initial registry config.
+log "Restarting k3s to load registry config..."
 systemctl restart k3s
+wait_for "k3s node Ready after registry restart" 180 k3s_node_ready
 
-# Wait for k3s to be ready again after restart
-echo "Waiting for k3s to be ready after registry config..."
-sleep 10
-until kubectl get nodes 2>/dev/null | grep -q "Ready"; do
-  sleep 5
-done
+# ── Sealed Secrets controller (pinned) ────────────────────────────────────────
+log "Installing Sealed Secrets controller v$${KUBESEAL_VERSION}..."
+kubectl apply --server-side \
+  -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/v$${KUBESEAL_VERSION}/controller.yaml"
+wait_for "sealed-secrets-controller rollout" 180 \
+  kubectl rollout status deployment/sealed-secrets-controller -n kube-system --timeout=10s
 
-# ── Install ArgoCD ─────────────────────────────────────────────────────────
-# user_data runs as root — must explicitly set KUBECONFIG for root's kubectl
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# ── ArgoCD server (pinned) ─────────────────────────────────────────────────────
+log "Installing ArgoCD $${ARGOCD_VERSION}..."
+# Idempotent namespace creation — safe to re-run on failed bootstraps
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -n argocd --server-side \
+  -f "https://github.com/argoproj/argo-cd/releases/download/$${ARGOCD_VERSION}/install.yaml"
 
-echo "=== Installing ArgoCD ==="
-kubectl create namespace argocd
-kubectl apply -n argocd \
-  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+log "Waiting for ArgoCD workloads..."
+# argocd-application-controller is a StatefulSet in ArgoCD v2.6+; others are Deployments
+wait_for "argocd-server"               300 kubectl rollout status deployment/argocd-server               -n argocd --timeout=10s
+wait_for "argocd-repo-server"          300 kubectl rollout status deployment/argocd-repo-server          -n argocd --timeout=10s
+wait_for "argocd-application-controller" 300 kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=10s
 
-# Wait for ArgoCD to be ready
-echo "Waiting for ArgoCD pods..."
-kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
-
-# Expose ArgoCD UI via NodePort
+# Expose ArgoCD UI via NodePort so it is reachable on the EC2 public IP
 kubectl patch svc argocd-server -n argocd \
   -p '{"spec": {"type": "NodePort"}}'
 
-# ── Apply ArgoCD Application (points to GitHub k8s/ folder) ────────────────
-# ArgoCD will then sync all manifests from Git automatically.
-cat <<'ARGOAPP' | kubectl apply -f -
+# ── ArgoCD Application manifest ────────────────────────────────────────────────
+# Wait for the Application CRD to be fully established before applying —
+# CRD registration is asynchronous after the ArgoCD install.yaml apply.
+log "Waiting for Application CRD to be established..."
+wait_for "Application CRD" 120 argocd_crd_established
+
+log "Applying ArgoCD Application manifest..."
+kubectl apply -f - <<'ARGOAPP'
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -162,4 +233,16 @@ spec:
         - /spec/replicas
 ARGOAPP
 
-echo "=== ArgoCD installed. GitOps loop active. ==="
+# ── Final status ───────────────────────────────────────────────────────────────
+PUBLIC_IP=$(curl -fsSL http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unavailable")
+ARGOCD_PORT=$(kubectl get svc argocd-server -n argocd \
+  -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "unknown")
+ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo "not yet available")
+
+log "=== Bootstrap complete: $(date) ==="
+log "k3s nodes    : $(kubectl get nodes --no-headers | awk '{print $1, $2}')"
+log "ArgoCD UI    : http://$${PUBLIC_IP}:$${ARGOCD_PORT}"
+log "ArgoCD login : admin / $${ARGOCD_PASS}"
+log "ECR refresh  : /var/log/ecr-refresh.log"
+log "Full log     : /var/log/user-data.log"
