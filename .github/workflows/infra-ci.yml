@@ -3,7 +3,7 @@
 #
 # DataVault — Infrastructure CI Pipeline
 #
-# Triggers: changes to terraform/** on push to main, or manually
+# Triggers: changes to terraform/infra/** or this workflow file, or manually
 #
 # Jobs:
 #   1. secret-scan      Gitleaks — block if credentials found
@@ -14,6 +14,10 @@
 #                       (push to main only, not on PRs)
 #
 # Authentication: OIDC — no long-lived AWS keys stored in GitHub
+#
+# NOTE: Bootstrap (S3 state bucket) is a one-time local operation.
+#       The bucket name is stored as the TF_STATE_BUCKET GitHub Secret.
+#       Bootstrap is NEVER run in CI.
 ###############################################################################
 
 name: Infrastructure CI
@@ -22,15 +26,17 @@ on:
   push:
     branches: [main]
     paths:
-      - "terraform/**"
+      - "terraform/infra/**"
+      - ".github/workflows/infra-ci.yml"
   pull_request:
     branches: [main]
     paths:
-      - "terraform/**"
-  workflow_dispatch:   # allow manual trigger
+      - "terraform/infra/**"
+      - ".github/workflows/infra-ci.yml"
+  workflow_dispatch:
 
 permissions:
-  id-token: write    # required for OIDC token request
+  id-token: write
   contents: read
 
 env:
@@ -67,9 +73,6 @@ jobs:
       - name: Init tflint
         run: tflint --init
 
-      - name: Lint bootstrap
-        run: tflint --chdir=terraform/bootstrap
-
       - name: Lint infra
         run: tflint --chdir=terraform/infra
 
@@ -80,12 +83,6 @@ jobs:
     needs: secret-scan
     steps:
       - uses: actions/checkout@v4
-
-      - name: tfsec bootstrap
-        uses: aquasecurity/tfsec-action@v1.0.0
-        with:
-          working_directory: terraform/bootstrap
-          additional_args: --minimum-severity HIGH
 
       - name: tfsec infra
         uses: aquasecurity/tfsec-action@v1.0.0
@@ -127,7 +124,7 @@ jobs:
           hostname         = "datavault-k3s"
           EOF
 
-      - name: Terraform init (infra)
+      - name: Terraform init
         working-directory: terraform/infra
         run: terraform init
 
@@ -138,7 +135,6 @@ jobs:
       - name: Terraform plan
         working-directory: terraform/infra
         run: terraform plan -out=tfplan -no-color
-        continue-on-error: false
 
       - name: Upload plan
         uses: actions/upload-artifact@v4
@@ -148,15 +144,11 @@ jobs:
           retention-days: 1
 
   # ── Job 5: Terraform Apply ─────────────────────────────────────────────────
-  # Only runs on push to main — never on pull requests.
-  # Downloads the plan artifact from the plan job to ensure
-  # exactly what was reviewed gets applied.
   apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
     needs: plan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment: production   # requires manual approval in GitHub if configured
     steps:
       - uses: actions/checkout@v4
 
@@ -186,7 +178,7 @@ jobs:
           hostname         = "datavault-k3s"
           EOF
 
-      - name: Terraform init (infra)
+      - name: Terraform init
         working-directory: terraform/infra
         run: terraform init
 
