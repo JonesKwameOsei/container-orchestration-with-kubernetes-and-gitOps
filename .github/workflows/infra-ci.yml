@@ -85,13 +85,13 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
           working_directory: terraform/bootstrap
-          minimum_severity: HIGH
+          additional_args: --minimum-severity HIGH
 
       - name: tfsec infra
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
           working_directory: terraform/infra
-          minimum_severity: HIGH
+          additional_args: --minimum-severity HIGH
 
   # ── Job 4: Terraform Plan ──────────────────────────────────────────────────
   plan:

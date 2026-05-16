@@ -39,7 +39,7 @@ echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.profile
 
 # ── Install kubectl (standalone — for version pinning) ────────────────────
 KUBECTL_VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
-curl -sLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+curl -sLO "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
 chmod +x kubectl
 mv kubectl /usr/local/bin/kubectl
 
@@ -51,7 +51,7 @@ chmod +x /usr/local/bin/argocd
 echo "=== Bootstrap complete: $(date) ==="
 
 # ── Install ArgoCD ─────────────────────────────────────────────────────────
-echo "=== Installing ArgoCD ===
+echo "=== Installing ArgoCD ==="
 kubectl create namespace argocd
 kubectl apply -n argocd \
   -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
