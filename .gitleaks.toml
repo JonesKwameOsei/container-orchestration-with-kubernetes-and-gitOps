@@ -1,0 +1,6 @@
+[allowlist]
+  description = "Allow sealed secrets — encrypted content safe to commit"
+  paths = [
+    '''k8s/sealed-secret\.yaml''',
+    '''k8s/sealed-secret\.yml'''
+  ]
