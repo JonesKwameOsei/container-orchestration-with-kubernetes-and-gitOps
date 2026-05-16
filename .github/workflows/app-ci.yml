@@ -128,7 +128,15 @@ jobs:
 
       - name: Push image to ECR
         run: |
-          docker push ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.short_sha }}
+          # Check if tag already exists (immutable tags — can't overwrite)
+          if aws ecr describe-images \
+            --repository-name ${{ env.ECR_REPOSITORY }} \
+            --image-ids imageTag=${{ steps.meta.outputs.short_sha }} \
+            --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Image tag ${{ steps.meta.outputs.short_sha }} already exists — skipping push"
+          else
+            docker push ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.short_sha }}
+          fi
 
   # ── Job 4: Update Kubernetes Manifest ─────────────────────────────────────
   # Updates deployment.yaml with the new ECR image tag.
