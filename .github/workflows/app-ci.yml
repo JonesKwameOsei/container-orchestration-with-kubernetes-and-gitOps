@@ -103,7 +103,6 @@ jobs:
         run: |
           docker build \
             -t ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.short_sha }} \
-            -t ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest \
             .
 
       # Trivy scans the image BEFORE it reaches ECR.
@@ -130,7 +129,6 @@ jobs:
       - name: Push image to ECR
         run: |
           docker push ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.short_sha }}
-          docker push ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
   # ── Job 4: Update Kubernetes Manifest ─────────────────────────────────────
   # Updates deployment.yaml with the new ECR image tag.
