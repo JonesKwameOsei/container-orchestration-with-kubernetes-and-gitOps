@@ -111,20 +111,10 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform init (bootstrap)
-        working-directory: terraform/bootstrap
-        run: terraform init
-
-      - name: Terraform apply bootstrap (idempotent)
-        working-directory: terraform/bootstrap
-        run: terraform apply -auto-approve
-
-      - name: Inject bucket name into backend.tf
-        working-directory: terraform/bootstrap
+      - name: Inject S3 bucket name into backend.tf
+        working-directory: terraform/infra
         run: |
-          BUCKET=$(terraform output -raw state_bucket_name)
-          echo "State bucket: ${BUCKET}"
-          sed -i "s|BUCKET_NAME_PLACEHOLDER|${BUCKET}|g" ../infra/backend.tf
+          sed -i "s|BUCKET_NAME_PLACEHOLDER|${{ secrets.TF_STATE_BUCKET }}|g" backend.tf
 
       - name: Create terraform.tfvars
         working-directory: terraform/infra
@@ -180,15 +170,10 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform init (bootstrap)
-        working-directory: terraform/bootstrap
-        run: terraform init
-
-      - name: Inject bucket name into backend.tf
-        working-directory: terraform/bootstrap
+      - name: Inject S3 bucket name into backend.tf
+        working-directory: terraform/infra
         run: |
-          BUCKET=$(terraform output -raw state_bucket_name)
-          sed -i "s|BUCKET_NAME_PLACEHOLDER|${BUCKET}|g" ../infra/backend.tf
+          sed -i "s|BUCKET_NAME_PLACEHOLDER|${{ secrets.TF_STATE_BUCKET }}|g" backend.tf
 
       - name: Create terraform.tfvars
         working-directory: terraform/infra
