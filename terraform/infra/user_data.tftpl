@@ -85,18 +85,18 @@ REGISTRY
 cat > /usr/local/bin/refresh-ecr-token.sh <<'REFRESH'
 #!/bin/bash
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
+ECR_REGISTRY="$${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-2.amazonaws.com"
 PASSWORD=$(aws ecr get-login-password --region eu-west-2)
 cat > /etc/rancher/k3s/registries.yaml <<EOF
 mirrors:
-  "${ECR_REGISTRY}":
+  "$${ECR_REGISTRY}":
     endpoint:
-      - "https://${ECR_REGISTRY}"
+      - "https://$${ECR_REGISTRY}"
 configs:
-  "${ECR_REGISTRY}":
+  "$${ECR_REGISTRY}":
     auth:
       username: AWS
-      password: ${PASSWORD}
+      password: $${PASSWORD}
 EOF
 systemctl restart k3s
 REFRESH
