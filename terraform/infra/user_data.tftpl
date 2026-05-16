@@ -22,6 +22,7 @@ systemctl start k3s
 
 # Wait for k3s to be ready before configuring kubectl
 echo "Waiting for k3s to be ready..."
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 until kubectl get nodes 2>/dev/null | grep -q "Ready"; do
   sleep 5
 done
@@ -43,6 +44,15 @@ curl -sLO "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/amd64/kubectl
 chmod +x kubectl
 mv kubectl /usr/local/bin/kubectl
 
+# ── Install kubeseal CLI ──────────────────────────────────────────────────
+KUBESEAL_VERSION='0.36.6'
+
+curl -OL "https://github.com/bitnami-labs/sealed-secrets/releases/download/v$${KUBESEAL_VERSION}/kubeseal-$${KUBESEAL_VERSION}-linux-amd64.tar.gz"
+
+tar -xvzf kubeseal-$${KUBESEAL_VERSION}-linux-amd64.tar.gz kubeseal
+
+install -m 755 kubeseal /usr/local/bin/kubeseal
+
 # ── Install ArgoCD CLI ─────────────────────────────────────────────────────
 curl -sSL -o /usr/local/bin/argocd \
   https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
@@ -51,6 +61,9 @@ chmod +x /usr/local/bin/argocd
 echo "=== Bootstrap complete: $(date) ==="
 
 # ── Install ArgoCD ─────────────────────────────────────────────────────────
+# user_data runs as root — must explicitly set KUBECONFIG for root's kubectl
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
 echo "=== Installing ArgoCD ==="
 kubectl create namespace argocd
 kubectl apply -n argocd \
