@@ -43,6 +43,7 @@ RUN adduser \
     --uid "${UID}" \
     appuser
 
+# App pwd
 WORKDIR /app
 
 # Copy installed packeages from builder stage
