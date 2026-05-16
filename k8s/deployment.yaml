@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
         - name: datavault-api
-          image: kwameds/datavault-api:1.0.0
+          image: 241893993378.dkr.ecr.eu-west-2.amazonaws.com/datavault-api:c2fdcf1
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
