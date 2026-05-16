@@ -924,3 +924,108 @@ kubectl logs -l app=datavault-api --prefix=true
 ```
 
 > From this demonstration, we observed self-healing in action: the liveness probe detects the crash, the Deployment controller starts a replacement, and the readiness probe gates traffic until the new pod is ready. No human intervention is required.
+
+## Week 1, Day 4 — ArgoCD Setup and GitOps Loop
+
+**Date:** 14 May 2026
+**Sprint Goal:** Install ArgoCD into the k3s cluster, connect it to the GitHub repository, verify the application syncs, and demonstrate the full GitOps loop — push a change, watch ArgoCD deploy it, revert it, watch ArgoCD roll it back.
+
+---
+
+### What Was Built
+
+| Component | Detail |
+|---|---|
+| ArgoCD | Installed into `argocd` namespace — 7 pods running |
+| ArgoCD UI | Exposed via NodePort, accessible at `https://<ec2_ip>:<nodeport>` |
+| ArgoCD CLI | Installed on EC2 instance for command-line management |
+| ArgoCD Application | `datavault-api` — watches `k8s/` folder in GitHub, syncs to `datavault-dev` namespace |
+| GitOps loop | Push to GitHub → ArgoCD detects → auto-syncs cluster |
+| `ignoreDifferences` | Configured to prevent ArgoCD/HPA replica count conflict |
+
+ArgoCD UI login page:
+
+![argocd-ui](images/argocd-ui.png)
+
+ArgoCD UI homepage (before application created):
+
+![argocd-ui-homepage](images/argocd-ui-homepage.png)
+
+ArgoCD application syncing:
+
+![argocd-ui-appsync](images/argocd-ui-appsync.png)
+
+ArgoCD application healthy:
+
+![argocd-ui-appsync-healthy](images/argocd-ui-appsync-healthy.png)
+
+ArgoCD OutOfSync state (HPA/replica conflict — before fix):
+
+![argocd-ui-app-out-of-sync](images/argocd-ui-app-out-of-sync.png)
+
+ArgoCD fully synced and healthy (final state):
+
+![argocd-ui-appsync-healthy-final](images/argocd-ui-appsync-healthy-final.png)
+
+---
+
+### Architecture Decisions
+
+**Why ArgoCD over manual `kubectl apply`?**
+Manual `kubectl apply` is just a slightly better version of the old SSH-and-restart process — it still requires a human to be present and execute a command. ArgoCD removes the human from the deployment loop entirely. Once a change is merged to the `main` branch, ArgoCD detects it and applies it automatically. The engineer's job ends at the Git push. This is the GitOps principle: Git is the single source of truth, and the cluster continuously reconciles itself against it.
+
+**Why define the ArgoCD Application as a YAML manifest rather than clicking through the UI?**
+Clicking through the UI produces configuration that exists only inside ArgoCD's internal state. If ArgoCD is reinstalled or the cluster is rebuilt, that configuration is gone. Defining the Application as `k8s/argocd-app.yaml` means the GitOps tool's own configuration is version-controlled in Git — the same principle applied to itself. Rebuilding the entire platform from scratch requires one `kubectl apply` on this file.
+
+**Why `automated: prune: true`?**
+Without `prune`, deleting a manifest from Git leaves the corresponding resource running in the cluster indefinitely. ArgoCD would show it as `OutOfSync` but never remove it. With `prune: true`, ArgoCD deletes cluster resources that no longer exist in Git. This enforces Git as the complete and authoritative description of what should be running.
+
+**Why `selfHeal: true`?**
+Without `selfHeal`, a manual `kubectl edit` or `kubectl delete` on the cluster would persist — the cluster would drift from Git state and ArgoCD would only flag it, not fix it. With `selfHeal: true`, any manual change to the cluster is detected and reverted within minutes. This is the enforcement mechanism that makes Git the single source of truth rather than just a suggestion.
+
+**Why `ignoreDifferences` for the Deployment replica count?**
+The HPA manages the replica count at runtime based on CPU utilisation. ArgoCD manages the replica count declared in Git. Without `ignoreDifferences`, these two systems fight: ArgoCD sets 3 replicas (from Git), HPA scales back to 2 (from CPU metrics), ArgoCD detects drift and sets 3 again — an infinite loop. The `ignoreDifferences` block tells ArgoCD to ignore `/spec/replicas` on the Deployment, ceding ownership of that field to the HPA. This is the correct pattern whenever an HPA is present.
+
+**Why `https://kubernetes.default.svc` as the destination server?**
+ArgoCD is running inside the same k3s cluster it manages. `kubernetes.default.svc` is the internal Kubernetes API server address — accessible from within the cluster without needing an external endpoint or credentials. This is the standard destination for in-cluster ArgoCD deployments.
+
+---
+
+### Problems Encountered
+
+**`secret-example.yaml` causing SyncError**
+ArgoCD syncs every YAML file in the `k8s/` path. The `secret-example.yaml` file contained placeholder base64 values (`xxxxxxxxxxxx`) which are not valid base64. ArgoCD attempted to apply it as a real Secret and failed with `illegal base64 data at input byte 3`. Resolution: moved `secret-example.yaml` to `docs/` — it is documentation, not a deployable resource, and does not belong in the folder ArgoCD watches.
+
+**ArgoCD showing `OutOfSync` after scaling demo**
+After pushing `replicas: 3` to Git, ArgoCD synced successfully and the Deployment scaled to 3. However, the HPA immediately scaled it back to 2 (CPU was at 5%, well below the 70% threshold). ArgoCD then detected that the cluster had `replicas: 2` while Git said `replicas: 3` and flagged `OutOfSync`. Resolution: added `ignoreDifferences` to `argocd-app.yaml` to tell ArgoCD to ignore the replica count field on the Deployment. The HPA now owns that field exclusively.
+
+**`applicationset-controller` restarting (13 restarts)**
+During the session, `argocd-applicationset-controller` showed 13 restarts. This is a known behaviour on resource-constrained nodes — the applicationset controller is memory-hungry and the t3.small occasionally OOM-kills it. It restarts automatically and does not affect the core ArgoCD sync functionality. The application controller, repo server, and ArgoCD server remained stable throughout.
+
+---
+
+### What Was Learned Today
+
+- ArgoCD is not just a deployment tool — it is a continuous reconciliation engine. It does not deploy once and stop watching; it continuously compares Git state against cluster state and corrects any drift.
+- The GitOps audit trail is the Git log itself. Every deployment is a commit with an author, timestamp, and message. `git revert` creates a new commit that undoes a change — the rollback is itself auditable.
+- `prune` and `selfHeal` are what make GitOps enforceable rather than advisory. Without them, Git is just documentation of what should be running, not a guarantee of what is running.
+- When an HPA manages a Deployment, the `replicas` field in the manifest becomes a source of conflict. `ignoreDifferences` is the standard resolution — ArgoCD and HPA each own their respective concerns.
+- ArgoCD's `Last Sync` panel shows historical information. A previously failed sync does not mean the current state is broken — always read `Sync Status` and `Health Status` as the current state.
+- The `.argocdignore` file works like `.gitignore` but for ArgoCD sync — any file pattern listed there is excluded from the sync process.
+
+---
+
+### Tomorrow — Day 5
+
+Build the GitHub Actions CI pipeline:
+- Trigger on push to `main`
+- Run tests against the FastAPI application
+- Build the Docker image
+- Push to AWS ECR with the Git commit SHA as the image tag
+- Update `k8s/deployment.yaml` with the new image tag
+- Commit the manifest change back to GitHub
+- ArgoCD detects the manifest change and deploys automatically
+
+This closes the full loop: code push → CI builds image → manifest updated → ArgoCD deploys → Git log is the audit trail.
+
+---

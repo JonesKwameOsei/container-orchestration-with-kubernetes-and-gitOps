@@ -97,7 +97,8 @@ datavault-gitops/
 │   ├── secret-example.yaml # Template for secret.yaml — safe to commit
 │   ├── deployment.yaml     # 2 replicas, RollingUpdate, liveness + readiness probes
 │   ├── service.yaml        # NodePort 30080
-│   └── hpa.yaml            # Autoscaler — scales 2→5 at 70% CPU
+│   ├── hpa.yaml            # Autoscaler — scales 2→5 at 70% CPU
+│   └── argocd-app.yaml     # ArgoCD Application manifest (Day 4)
 ├── .github/workflows/      # GitHub Actions CI pipeline (Day 5)
 ├── .tfsec/config.yml       # tfsec security scan config
 ├── JOURNAL.md              # Daily engineering log
@@ -120,7 +121,100 @@ datavault-gitops/
 
 ---
 
-## Kubernetes Manifests
+## ArgoCD — GitOps Engine
+
+ArgoCD is the component that makes this platform GitOps. It watches the `k8s/` folder in the GitHub repository and continuously reconciles the cluster state against it. Every deployment is a Git commit. Every rollback is a `git revert`.
+
+### Install ArgoCD
+
+SSH into the EC2 instance, then:
+
+```bash
+kubectl create namespace argocd
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Wait for all 7 pods to reach Running
+kubectl get pods -n argocd -w
+
+# Expose the UI via NodePort
+kubectl patch svc argocd-server -n argocd \
+  -p '{"spec": {"type": "NodePort"}}'
+
+# Get the HTTPS NodePort
+kubectl get svc argocd-server -n argocd
+```
+
+Access the UI at `https://<ec2_public_ip>:<https-nodeport>`.
+
+Get the initial admin password:
+
+```bash
+kubectl get secret argocd-initial-admin-secret \
+  -n argocd \
+  -o jsonpath="{.data.password}" | base64 -d
+```
+
+### Install the ArgoCD CLI
+
+```bash
+curl -sSL -o argocd \
+  https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+chmod +x argocd && sudo mv argocd /usr/local/bin/
+
+argocd login <ec2_public_ip>:<nodeport> \
+  --username admin --password <password> --insecure
+```
+
+### Create the ArgoCD Application
+
+The Application manifest is at `k8s/argocd-app.yaml`. Apply it to the cluster:
+
+```bash
+kubectl apply -f k8s/argocd-app.yaml
+```
+
+Verify:
+
+```bash
+argocd app get datavault-api
+# Sync Status:   Synced
+# Health Status: Healthy
+```
+
+### The GitOps loop
+
+```
+Push commit to GitHub
+       ↓
+ArgoCD detects change (polls every 3 min)
+       ↓
+ArgoCD syncs cluster to match Git
+       ↓
+Git log = deployment audit trail
+```
+
+### Rollback
+
+```bash
+git revert <commit-sha>
+git push origin main
+# ArgoCD detects the revert commit and redeploys the previous state
+```
+
+The rollback is itself a Git commit — auditable, timestamped, attributed to an author.
+
+### Key design decisions
+
+**`prune: true`** — resources deleted from Git are deleted from the cluster. Without this, deleted manifests leave orphaned resources running indefinitely.
+
+**`selfHeal: true`** — manual `kubectl` changes to the cluster are detected and reverted. Git is the enforced source of truth, not just a suggestion.
+
+**`ignoreDifferences` for replica count** — when an HPA is present, it owns the replica count at runtime. Without `ignoreDifferences`, ArgoCD and the HPA fight in a loop: ArgoCD sets the Git value, HPA corrects it, ArgoCD detects drift and sets it again. The `ignoreDifferences` block cedes that field to the HPA.
+
+**Application as code** — `argocd-app.yaml` is version-controlled. If ArgoCD is reinstalled, one `kubectl apply` restores the entire configuration.
+
+---
 
 All manifests live in `k8s/` and target the `datavault-dev` namespace. Apply the namespace first, then the rest in any order.
 

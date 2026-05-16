@@ -28,6 +28,9 @@ RUN pip install --upgrade pip \
 # No pip, no build tools, no cache — smaller attack surface.
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
+# Patch OS-level CVEs — Trivy blocks CRITICAL vulnerabilities
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Security: run as non-root user.
 # If the container is compromised, the attacker has no root privileges.
 ARG UID=10001
