@@ -13,6 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # the application crashes without emitting any logs due to buffering.
 ENV PYTHONUNBUFFERED=1
 
+# Dir for build
 WORKDIR /build
 
 # Copy only requirements first — Docker layer caching means this layer
