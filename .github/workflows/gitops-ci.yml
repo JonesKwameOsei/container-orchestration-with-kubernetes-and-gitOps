@@ -50,9 +50,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # gitleaks-action@v2 does not support the workflow_run trigger event.
+      # Run the binary directly instead — picks up .gitleaks.toml automatically.
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --verbose --redact --exit-code 1
 
   # ── Job 2: Update Kubernetes Manifest ─────────────────────────────────────
   # Patches the image tag in deployment.yaml and commits back to main.
