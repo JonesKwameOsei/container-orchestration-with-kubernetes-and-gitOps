@@ -27,10 +27,10 @@ trap 'log "FATAL: bootstrap failed at line $LINENO (exit $?) — tail /var/log/u
 wait_for() {
   local desc="$1" timeout="$2"; shift 2
   local elapsed=0
-  log "Waiting for: $desc (timeout ${timeout}s)..."
+  log "Waiting for: $desc (timeout $${timeout}s)..."
   until "$@" >/dev/null 2>&1; do
     if [ "$elapsed" -ge "$timeout" ]; then
-      log "ERROR: timed out waiting for $desc after ${timeout}s"
+      log "ERROR: timed out waiting for $desc after $${timeout}s"
       return 1
     fi
     sleep 5
@@ -149,20 +149,20 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 log "Refreshing ECR token..."
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION=$(curl -fsSL http://169.254.169.254/latest/meta-data/placement/region)
-REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
-TOKEN=$(aws ecr get-login-password --region "${REGION}")
+REGISTRY="$${ACCOUNT}.dkr.ecr.$${REGION}.amazonaws.com"
+TOKEN=$(aws ecr get-login-password --region "$${REGION}")
 cat > /etc/rancher/k3s/registries.yaml <<EOF
 mirrors:
-  "${REGISTRY}":
+  "$${REGISTRY}":
     endpoint:
-      - "https://${REGISTRY}"
+      - "https://$${REGISTRY}"
 configs:
-  "${REGISTRY}":
+  "$${REGISTRY}":
     auth:
       username: AWS
-      password: "${TOKEN}"
+      password: "$${TOKEN}"
 EOF
-log "ECR token refreshed for ${REGISTRY}."
+log "ECR token refreshed for $${REGISTRY}."
 REFRESH
 
 chmod +x /usr/local/bin/refresh-ecr-token.sh
